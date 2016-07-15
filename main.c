@@ -27,6 +27,13 @@ typedef struct {
 	time_t start;
 } cfg_t;
 
+typedef struct {
+	time_t start;
+	size_t duration;
+	size_t counter;
+	size_t limit;
+} benchmark_t;
+
 static const char BASE32_ALPHABET[] = "abcdefghijklmnopqrstuvwxyz234567";
 
 static void
@@ -65,7 +72,7 @@ base32_eq(const char *b32_in, const unsigned char *src, int max_bytes) {
 void
 randombytes(unsigned char * ptr, unsigned int length) 
 {
-	if( (rand_fh = fopen("/dev/urandom", "rb")) != NULL
+	if( (rand_fh != NULL || (rand_fh = fopen("/dev/urandom", "rb")) != NULL)
 	 && fread(ptr, length, 1, rand_fh) > 0 )
 		return;
 
@@ -124,26 +131,94 @@ xorshift128plus(uint64_t *s) {
 }
 
 static void
-benchmark_xorshift () {
+benchmark_start (benchmark_t *bench, const char *name)
+{
+	printf("%s:\n", name);
+	memset(bench, 0, sizeof(*bench));
+	bench->start = time(NULL);
+	bench->limit = 100;
+}
+
+static void
+benchmark_end (benchmark_t *bench)
+{
+	printf("\n");
+}
+
+static void
+benchmark_tick (benchmark_t *bench)
+{
+	if( bench->counter++ == bench->limit )
+	{
+		time_t now = time(NULL);
+		int duration = now - bench->start;
+		if( duration < 2 ) {
+			bench->limit *= 1.5;
+			return;
+		}
+		printf("%ld/s\n", bench->counter / duration);
+		bench->counter = 0;
+		bench->start = now;
+		bench->duration += duration;
+	} 
+}
+
+static void
+benchmark_xorshift (benchmark_t *bench) {
      unsigned char pk[crypto_sign_PUBLICKEYBYTES];
      unsigned char sk[crypto_hash_BYTES];
-     time_t start = time(NULL);
-     time_t begin = start;
-     size_t N = 0;
-     size_t K = 1000000000;
-     size_t X = 60;
      crypto_sign_keypair( pk, sk );
-
-     while( K-- ) {
-	if( N++ == 100000 ) {
-		time_t now = time(NULL);
-		int duration = now - start;
-		printf("%ld/s\n", N / duration);
-		start = now;
-		N = 0;
-	}
+     benchmark_start(bench, "xorshift128plus");
+     while( bench->duration < 20 ) {
+	benchmark_tick(bench);
 	xorshift128plus((uint64_t*)&sk);
      }
+     benchmark_end(bench);
+}
+
+static void
+benchmark_keypair_base(benchmark_t *bench) {
+     unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+     unsigned char sk[crypto_hash_BYTES];
+     crypto_sign_keypair( pk, sk );
+     benchmark_start(bench, "crypto_sign_keypair_base");
+     while( bench->duration < 20 ) {
+	benchmark_tick(bench);
+	crypto_sign_keypair_base(pk, sk);
+     }
+     benchmark_end(bench);
+}
+
+static void
+benchmark_keypair (benchmark_t *bench) {
+     unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+     unsigned char sk[crypto_hash_BYTES];
+     benchmark_start(bench, "crypto_sign_keypair");
+     while( bench->duration < 20 ) {
+	benchmark_tick(bench);
+        crypto_sign_keypair( pk, sk );
+     }
+     benchmark_end(bench);
+}
+
+static void
+benchmark_hash (benchmark_t *bench) {
+     unsigned char sk[crypto_hash_BYTES];
+     benchmark_start(bench, "crypto_hash");
+     while( bench->duration < 20 ) {
+	benchmark_tick(bench);
+	crypto_hash(sk, sk, crypto_hash_BYTES);
+     }
+     benchmark_end(bench);
+}
+
+static void
+benchmark () {
+	benchmark_t bench;
+	benchmark_xorshift(&bench);
+	benchmark_keypair(&bench);
+	benchmark_keypair_base(&bench);
+	benchmark_hash(&bench);
 }
 
 static void
@@ -194,6 +269,7 @@ print_usage ( char *arg ) {
 	fprintf(stderr, " -X <hex>\n");
 	fprintf(stderr, " -R <raw-ascii>\n");
 	fprintf(stderr, " -B <base32>\n");
+	fprintf(stderr, " -b - Benchmark\n");
 }
 
 int
@@ -204,8 +280,11 @@ main( int argc, char **argv )
 
 	memset(&cfg, 0, sizeof(cfg));
 
-	while ((opt = getopt(argc, argv, "X:R:B:")) != -1) {
+	while ((opt = getopt(argc, argv, "bX:R:B:")) != -1) {
 		switch(opt) {
+		case 'b':
+			benchmark();
+			exit(EXIT_SUCCESS);
 		case 'X':
 			cfg.hex = optarg;
 			cfg.prefix_len = strlen(optarg);
